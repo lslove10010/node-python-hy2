@@ -13,7 +13,6 @@ from pathlib import Path
 # 2. /home/container/.env 文件（你可以手动创建）
 # 3. 脚本中的默认值
 #
-# 新增变量：
 # HY2_NODE_NAME = 节点别名（显示在客户端节点列表中的名称，可自定义中文/英文）
 #                 示例：HY2_NODE_NAME=美国节点1
 #                 如果不设置，默认使用 "Hysteria2 Node"
@@ -25,13 +24,14 @@ from pathlib import Path
 # MASQUERADE_URL=https://www.bing.com
 # FAKE_DOMAIN=bing.com
 
-# 工作目录（固定为 /home/container，容器可写）
-WORK_DIR = Path("/home/container")
+# 工作目录：现在使用当前工作目录（容器启动时通常为 /home/container）
+# 这样更灵活，无需硬编码路径。如果面板在其他目录启动，也能正常工作
+WORK_DIR = Path.cwd()
 HY2_BINARY = WORK_DIR / "hysteria"
 CONFIG_FILE = WORK_DIR / "config.yaml"
 CERT_FILE = WORK_DIR / "cert.crt"
 KEY_FILE = WORK_DIR / "cert.key"
-ENV_FILE = WORK_DIR / ".env"
+ENV_FILE = WORK_DIR / ".env"  # .env 文件也会在当前目录查找
 
 def load_dotenv():
     """加载 .env 文件（如果存在）"""
@@ -162,7 +162,8 @@ def run_hysteria2():
     print(f"\n=== Hysteria2 服务器启动成功 ===")
     print(f"监听端口: {port}")
     print(f"公网 IP: {public_ip}")
-    print(f"节点名称: {hy2_node_name}\n")
+    print(f"节点名称: {hy2_node_name}")
+    print(f"工作目录: {WORK_DIR}\n")
     
     print("客户端连接链接（自签证书，需要允许不安全）：")
     print(f"\n\033[92m{client_url}\033[m\n")
@@ -176,10 +177,10 @@ def run_hysteria2():
     subprocess.run([str(HY2_BINARY), "server", "-c", str(CONFIG_FILE)])
 
 def main():
-    os.chdir(WORK_DIR)
+    # 无需 os.chdir，因为已经使用 Path.cwd() 作为工作目录
     
-    print("=== Hysteria2 容器专用启动脚本（支持节点名称）===")
-    print("工作目录:", WORK_DIR)
+    print("=== Hysteria2 容器专用启动脚本（工作目录为当前路径）===")
+    print(f"当前工作目录: {WORK_DIR}")
     
     load_dotenv()
     
