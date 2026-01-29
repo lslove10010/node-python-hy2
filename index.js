@@ -3,17 +3,18 @@
 // 支持 .env 文件（无外部依赖）、环境变量、命令行端口参数
 // 支持自定义节点名称（HY2_NODE_NAME）
 // 默认跳过证书验证，适用于超低内存环境（32-64MB）
+// 新增：可靠获取 IPv6（使用 curl -6），并输出 IPv6 节点链接（如果服务器支持）
 
 const fs = require('fs');
 const https = require('https');
 const os = require('os');
 const path = require('path');
-const { execFile, spawn } = require('child_process');
+const { execFile, spawn, exec } = require('child_process');
 const { promisify } = require('util');
-
 const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
 
-// ---------- 手动加载 .env 文件（使用自带模块） ----------
+// ---------- 手动加载 .env 文件 ----------
 function loadEnv() {
   const envPath = path.join(__dirname, '.env');
   if (fs.existsSync(envPath)) {
@@ -21,33 +22,27 @@ function loadEnv() {
     content.split(/\r?\n/).forEach(line => {
       line = line.trim();
       if (!line || line.startsWith('#')) return;
-
       const eqIndex = line.indexOf('=');
       if (eqIndex === -1) return;
-
       const key = line.substring(0, eqIndex).trim();
       let value = line.substring(eqIndex + 1).trim();
-
-      // 去除可选的包围引号
       if ((value.startsWith('"') && value.endsWith('"')) ||
           (value.startsWith("'") && value.endsWith("'"))) {
         value = value.substring(1, value.length - 1);
       }
-
       process.env[key] = value;
     });
     console.log("✅ 从 .env 文件加载配置变量");
   }
 }
-loadEnv(); // 立即执行加载
+loadEnv();
 
 // ---------- 默认配置 ----------
 const HYSTERIA_VERSION = "v2.7.0";
 const DEFAULT_PORT = 22222;
 const DEFAULT_PASSWORD = "ieshare2025"; // 强烈建议修改！
-const DEFAULT_NODE_NAME = "Hy2-Bing";   // 新增：默认节点名称
+const DEFAULT_NODE_NAME = "Hy2-Bing";
 
-// 密码
 const AUTH_PASSWORD = process.env.HY2_PASSWORD || DEFAULT_PASSWORD;
 if (process.env.HY2_PASSWORD) {
   console.log("✅ 从 .env 或环境变量读取密码（HY2_PASSWORD）");
@@ -55,7 +50,6 @@ if (process.env.HY2_PASSWORD) {
   console.log("⚠️ 未设置 HY2_PASSWORD，使用默认密码（极不安全！请立即修改）");
 }
 
-// 节点名称（新增）
 const NODE_NAME = process.env.HY2_NODE_NAME || DEFAULT_NODE_NAME;
 if (process.env.HY2_NODE_NAME) {
   console.log(`✅ 从 .env 或环境变量读取节点名称: ${NODE_NAME}`);
@@ -68,21 +62,14 @@ const KEY_FILE = "key.pem";
 const SNI = "www.bing.com";
 const ALPN = "h3";
 
-// ------------------------------
 console.log("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
 console.log("Hysteria2 极简部署脚本（Node.js 版）");
-console.log("支持 .env 文件（无外部依赖）、环境变量、命令行端口参数");
-console.log("支持自定义节点名称（HY2_NODE_NAME）");
-console.log("示例 .env 文件内容：");
-console.log("HY2_PORT=443");
-console.log("HY2_PASSWORD=YourVeryStrongPassword123!");
-console.log("HY2_NODE_NAME=MyCustomNode");  // 新增示例
+console.log("支持 .env 文件、环境变量、命令行端口参数、自定义节点名称");
+console.log("新增：可靠检测并输出 IPv6 节点链接");
 console.log("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
 
 // ---------- 获取端口 ----------
 let SERVER_PORT = DEFAULT_PORT;
-
-// 优先级：命令行参数 > 环境变量/.env > 默认
 if (process.argv.length >= 3 && process.argv[2]) {
   SERVER_PORT = parseInt(process.argv[2], 10);
   console.log(`✅ 使用命令行指定端口: ${SERVER_PORT}（优先级最高）`);
@@ -101,15 +88,10 @@ function getArch() {
     console.log("❌ 只支持 Linux 系统");
     process.exit(1);
   }
-  if (machine === 'x64' || machine === 'amd64') {
-    return "amd64";
-  } else if (machine === 'arm64') {
-    return "arm64";
-  } else {
-    return "";
-  }
+  if (machine === 'x64' || machine === 'amd64') return "amd64";
+  if (machine === 'arm64') return "arm64";
+  return "";
 }
-
 const ARCH = getArch();
 if (!ARCH) {
   console.log(`❌ 无法识别 CPU 架构: ${os.arch()}`);
@@ -127,10 +109,8 @@ async function downloadBinary() {
     console.log("✅ hy2 二进制已存在，跳过下载和重命名。");
     return;
   }
-
   const url = `https://cdn.gh-proxy.org/https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/${ORIGINAL_BIN_NAME}`;
   console.log(`⏳ 下载 Hysteria2 二进制: ${url}`);
-
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(ORIGINAL_BIN_PATH);
     https.get(url, { timeout: 30000 }, (response) => {
@@ -147,9 +127,7 @@ async function downloadBinary() {
         resolve();
       });
     }).on('error', (err) => {
-      if (fs.existsSync(ORIGINAL_BIN_PATH)) {
-        fs.unlinkSync(ORIGINAL_BIN_PATH);
-      }
+      if (fs.existsSync(ORIGINAL_BIN_PATH)) fs.unlinkSync(ORIGINAL_BIN_PATH);
       reject(err);
     });
   });
@@ -161,7 +139,6 @@ async function ensureCert() {
     console.log("✅ 发现证书，使用现有 cert/key。");
     return;
   }
-
   console.log("🔑 未发现证书，使用 openssl 生成自签证书（prime256v1）...");
   try {
     await execFileAsync('openssl', [
@@ -183,21 +160,17 @@ async function ensureCert() {
 function writeConfig() {
   const config = `
 listen: ":${SERVER_PORT}"
-
 tls:
   cert: "${path.resolve(CERT_FILE)}"
   key: "${path.resolve(KEY_FILE)}"
   alpn:
     - "${ALPN}"
-
 auth:
   type: "password"
   password: "${AUTH_PASSWORD}"
-
 bandwidth:
   up: "200 mbps"
   down: "200 mbps"
-
 quic:
   max_idle_timeout: "10s"
   max_concurrent_streams: 4
@@ -206,13 +179,12 @@ quic:
   initial_conn_receive_window: 131072
   max_conn_receive_window: 262144
 `;
-
   fs.writeFileSync('server.yaml', config.trim() + '\n');
   console.log(`✅ 写入配置 server.yaml（端口=${SERVER_PORT}）。`);
 }
 
-// ---------- 获取服务器 IP ----------
-async function getServerIp() {
+// ---------- 获取 IPv4 ----------
+async function getServerIpv4() {
   return new Promise((resolve) => {
     https.get('https://api.ipify.org', { timeout: 10000 }, (res) => {
       let data = '';
@@ -222,23 +194,40 @@ async function getServerIp() {
   });
 }
 
+// ---------- 获取 IPv6 ----------
+async function getServerIpv6() {
+  try {
+    const { stdout } = await execAsync('curl -6 -s --max-time 10 https://api64.ipify.org');
+    const ip = stdout.trim();
+    if (ip && ip.includes(':')) return ip;
+    return null;
+  } catch (err) {
+    console.log("⚠️ 获取 IPv6 失败（curl 命令出错或无 IPv6 网络），将只显示 IPv4 链接");
+    return null;
+  }
+}
+
 // ---------- 打印连接信息 ----------
-function printConnectionInfo(ip) {
-  const maskedPass = AUTH_PASSWORD.length >= 6
-    ? AUTH_PASSWORD.substring(0, 3) + '****' + AUTH_PASSWORD.slice(-3)
-    : '****';
+function printConnectionInfo(ipv4, ipv6) {
+  const maskedPass = AUTH_PASSWORD.length >= 6 ? AUTH_PASSWORD.substring(0, 3) + '****' + AUTH_PASSWORD.slice(-3) : '****';
 
   console.log("🎉 Hysteria2 部署成功！（极简优化版）");
   console.log("==========================================================================");
   console.log("📋 服务器信息:");
-  console.log(`   🌐 IP地址: ${ip}`);
-  console.log(`   🔌 端口: ${SERVER_PORT}`);
-  console.log(`   🔑 密码: ${maskedPass}`);
-  console.log(`   📛 节点名称: ${NODE_NAME}`);
+  console.log(` 🌐 IPv4 地址: ${ipv4}`);
+  if (ipv6) console.log(` 🌐 IPv6 地址: ${ipv6}`);
+  else console.log(` ⚠️ 未检测到 IPv6 支持`);
+  console.log(` 🔌 端口: ${SERVER_PORT}`);
+  console.log(` 🔑 密码: ${maskedPass}`);
+  console.log(` 📛 节点名称: ${NODE_NAME}`);
   console.log("");
   console.log("📱 节点链接（跳过证书验证）:");
-  console.log(`hysteria2://${AUTH_PASSWORD}@${ip}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#${NODE_NAME}`);
-  console.log("");
+  console.log(`IPv4: hysteria2://${AUTH_PASSWORD}@${ipv4}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#${NODE_NAME}`);
+  if (ipv6) {
+    console.log(`IPv6: hysteria2://${AUTH_PASSWORD}@[${ipv6}]:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#${NODE_NAME}-IPv6`);
+    console.log(`（IPv6 地址已用 [] 包裹，节点名称加 -IPv6 后缀便于区分）`);
+  }
+  if (ipv4 === 'YOUR_SERVER_IP') console.log("⚠️ 无法自动获取公网 IPv4，请手动替换链接中的 YOUR_SERVER_IP");
   console.log("==========================================================================");
 }
 
@@ -247,25 +236,21 @@ async function main() {
   await downloadBinary();
   await ensureCert();
   writeConfig();
-  const serverIp = await getServerIp();
-  printConnectionInfo(serverIp);
+  const serverIpv4 = await getServerIpv4();
+  const serverIpv6 = await getServerIpv6();
+  printConnectionInfo(serverIpv4, serverIpv6);
+
   console.log("🚀 启动 Hysteria2 服务器...");
-
-  const child = spawn(FINAL_BIN_PATH, ['server', '-c', 'server.yaml'], {
-    stdio: 'inherit'
-  });
-
+  const child = spawn(FINAL_BIN_PATH, ['server', '-c', 'server.yaml'], { stdio: 'inherit' });
   child.on('error', (err) => {
     console.error('启动失败:', err);
     process.exit(1);
   });
-
   process.on('SIGINT', () => {
     child.kill();
     process.exit();
   });
 }
-
 main().catch(err => {
   console.error('脚本执行出错:', err);
   process.exit(1);
